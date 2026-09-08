@@ -51,7 +51,21 @@ def generate_diagram(req: DiagramRequest, db: Session = Depends(get_db)):
 
     mermaid_code = generate_mermaid_diagram(dependency_graph)
 
-    db.add(GeneratedArtifact(project_id=req.project_id, kind="diagram", content=mermaid_code))
+    db.add(
+        GeneratedArtifact(
+            project_id=req.project_id, 
+            kind="diagram", 
+            content=mermaid_code,
+        )
+    )
     db.commit()
+    log_action(
+    db=db,
+    action="GENERATE_DIAGRAM",
+    project_id=req.project_id,
+    details={
+        "type": "mermaid",
+    },
+)
 
     return {"mermaid": mermaid_code, "cached": False}
