@@ -400,7 +400,7 @@ async def upload_project(
         # Record project creation in audit log.
         log_action(
             db=db,
-            action="project_created",
+            action="UPLOAD_PROJECT",
             user_id=user.id,
             project_id=project.id,
             details={
