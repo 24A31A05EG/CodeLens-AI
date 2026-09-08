@@ -182,7 +182,7 @@ def explain(
 
         return {
             "project_id": req.project_id,
-            **result,
+            **result, 
         }
 
     project_files = (
