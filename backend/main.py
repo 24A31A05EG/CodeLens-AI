@@ -5,7 +5,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from db.database import init_db
-from routers import ask, diagram, docs, explain, history, structure, upload
+from routers import (
+    ask,
+    audit,
+    diagram,
+    docs,
+    explain,
+    history,
+    structure,
+    upload,
+)
 
 
 @asynccontextmanager
@@ -38,3 +47,8 @@ app.include_router(docs.router, prefix="/generate-docs", tags=["docs"])
 app.include_router(diagram.router, prefix="/generate-diagram", tags=["diagram"])
 app.include_router(history.router, tags=["history"])
 app.include_router(ask.router, prefix="/ask", tags=["ask"])
+
+app.include_router(
+    audit.router,
+    tags=["audit"],
+)
