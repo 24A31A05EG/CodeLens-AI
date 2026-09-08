@@ -75,6 +75,15 @@ def _explain_one(project_id: str, file_path: str, level: str, db: Session) -> di
         )
     )
     db.commit()
+    log_action(
+    db=db,
+    action="EXPLAIN_CODE",
+    project_id=project_id,
+    details={
+        "file_path": normalized_path,
+        "level": level,
+    },
+)
 
     return {
         "file_path": normalized_path,
