@@ -1,4 +1,4 @@
-﻿import io
+import io
 import logging
 import os
 import re
@@ -90,7 +90,12 @@ def _extract_zip_safely(
 
             zf.extractall(repo_path)
     except zipfile.BadZipFile:
-        _mark_failed_and_raise(db, project, 400, "Uploaded file is not a valid zip archive.")
+        _mark_failed_and_raise(
+            db,
+            project,
+            400,
+            "Uploaded file is not a valid zip archive.",
+        )
 
 
 def _run_parse_job(project_id: str, repo_path: str) -> None:
@@ -99,18 +104,24 @@ def _run_parse_job(project_id: str, repo_path: str) -> None:
     Runs after the upload response is sent.
     """
     db = SessionLocal()
+
     try:
         project = db.query(Project).filter(Project.id == project_id).first()
+
         if not project:
             logger.error("Parse job: project %s not found.", project_id)
             return
 
         try:
             parsed_files = parse_project(repo_path)
+
             if not parsed_files:
                 project.status = "failed"
                 db.commit()
-                logger.warning("Parse job found no supported files for project %s.", project_id)
+                logger.warning(
+                    "Parse job found no supported files for project %s.",
+                    project_id,
+                )
                 return
 
             for parsed_file in parsed_files:
@@ -125,13 +136,18 @@ def _run_parse_job(project_id: str, repo_path: str) -> None:
                 )
 
             for parsed_file in parsed_files:
-                chunks = chunk_file(parsed_file["full_path"], parsed_file["symbols"])
+                chunks = chunk_file(
+                    parsed_file["full_path"],
+                    parsed_file["symbols"],
+                )
+
                 for chunk_text in chunks:
                     try:
                         embedding = embed_text(chunk_text)
                     except Exception:
                         logger.warning(
-                            "Embedding failed for %s in project %s; storing chunk without embedding.",
+                            "Embedding failed for %s in project %s; "
+                            "storing chunk without embedding.",
                             parsed_file["path"],
                             project_id,
                         )
@@ -148,15 +164,29 @@ def _run_parse_job(project_id: str, repo_path: str) -> None:
 
             project.status = "ready"
             db.commit()
-            logger.info("Parse job complete for project %s.", project_id)
+
+            logger.info(
+                "Parse job complete for project %s.",
+                project_id,
+            )
 
         except Exception:
             db.rollback()
-            project = db.query(Project).filter(Project.id == project_id).first()
+
+            project = (
+                db.query(Project)
+                .filter(Project.id == project_id)
+                .first()
+            )
+
             if project:
                 project.status = "failed"
                 db.commit()
-            logger.exception("Parse job failed for project %s.", project_id)
+
+            logger.exception(
+                "Parse job failed for project %s.",
+                project_id,
+            )
 
     finally:
         db.close()
@@ -171,105 +201,219 @@ async def upload_project(
     github_url: Optional[str] = Form(None),
 ):
     if not file and not github_url:
-        raise HTTPException(400, "Provide either a code file, zip file, or github_url.")
+        raise HTTPException(
+            400,
+            "Provide either a code file, zip file, or github_url.",
+        )
 
     if file and github_url:
-        raise HTTPException(400, "Provide only one of: file, github_url.")
+        raise HTTPException(
+            400,
+            "Provide only one of: file, github_url.",
+        )
 
+    # ---------------------------------------------------------
+    # FILE / ZIP UPLOAD
+    # ---------------------------------------------------------
     if file:
         raw = await file.read(MAX_UPLOAD_BYTES + 1)
+
         if not raw:
-            raise HTTPException(400, "Uploaded file is empty.")
+            raise HTTPException(
+                400,
+                "Uploaded file is empty.",
+            )
+
         if len(raw) > MAX_UPLOAD_BYTES:
             raise HTTPException(
                 413,
-                f"Upload exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.",
+                f"Upload exceeds the "
+                f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.",
             )
 
-        filename = _safe_upload_filename(file.filename or "uploaded_code")
+        filename = _safe_upload_filename(
+            file.filename or "uploaded_code"
+        )
+
         is_zip = _is_zip_payload(filename, raw)
 
         if not is_zip:
             extension = os.path.splitext(filename)[1].lower()
+
             if extension not in EXT_TO_LANG:
                 supported = ", ".join(sorted(EXT_TO_LANG))
+
                 raise HTTPException(
                     400,
-                    f"Unsupported file type '{extension or 'none'}'. Supported: {supported}",
+                    f"Unsupported file type "
+                    f"'{extension or 'none'}'. "
+                    f"Supported: {supported}",
                 )
-        project_name = os.path.splitext(filename)[0] if is_zip else filename
 
+        project_name = (
+            os.path.splitext(filename)[0]
+            if is_zip
+            else filename
+        )
+
+        # Get or create the default user before creating the project.
         user = get_or_create_default_user(db)
 
-project = Project(
-    user_id=user.id,
-    name=project_name,
-    source="upload",
-    source_ref=filename,
-)
-db.add(project)
-db.commit()
-db.refresh(project)
+        # Associate the project with the user.
+        project = Project(
+            user_id=user.id,
+            name=project_name,
+            source="upload",
+            source_ref=filename,
+        )
 
-        repo_path = os.path.join(STORAGE_ROOT, project.id)
-        os.makedirs(repo_path, exist_ok=True)
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+
+        repo_path = os.path.join(
+            STORAGE_ROOT,
+            project.id,
+        )
+
+        os.makedirs(
+            repo_path,
+            exist_ok=True,
+        )
 
         if is_zip:
-            zip_path = os.path.join(STORAGE_ROOT, f"{project.id}.zip")
+            zip_path = os.path.join(
+                STORAGE_ROOT,
+                f"{project.id}.zip",
+            )
+
             try:
                 with open(zip_path, "wb") as fh:
                     fh.write(raw)
-                _extract_zip_safely(zip_path, repo_path, db, project)
+
+                _extract_zip_safely(
+                    zip_path,
+                    repo_path,
+                    db,
+                    project,
+                )
+
             finally:
                 if os.path.exists(zip_path):
                     os.remove(zip_path)
+
         else:
-            target_path = os.path.realpath(os.path.join(repo_path, filename))
+            target_path = os.path.realpath(
+                os.path.join(
+                    repo_path,
+                    filename,
+                )
+            )
+
             real_root = os.path.realpath(repo_path)
-            if os.path.commonpath([real_root, target_path]) != real_root:
-                _mark_failed_and_raise(db, project, 400, "Invalid upload filename.")
+
+            if os.path.commonpath(
+                [real_root, target_path]
+            ) != real_root:
+                _mark_failed_and_raise(
+                    db,
+                    project,
+                    400,
+                    "Invalid upload filename.",
+                )
+
             with open(target_path, "wb") as fh:
                 fh.write(raw)
 
+    # ---------------------------------------------------------
+    # GITHUB / GITLAB / BITBUCKET URL
+    # ---------------------------------------------------------
     else:
         if not _ALLOWED_GIT_URL.match(github_url or ""):
             raise HTTPException(
                 400,
-                "github_url must be a public HTTPS URL on github.com, gitlab.com, or bitbucket.org.",
+                "github_url must be a public HTTPS URL "
+                "on github.com, gitlab.com, or bitbucket.org.",
             )
 
-        name = github_url.rstrip("/").split("/")[-1].replace(".git", "")
+        name = (
+            github_url
+            .rstrip("/")
+            .split("/")[-1]
+            .replace(".git", "")
+        )
 
-user = get_or_create_default_user(db)
+        # Get or create the default user before creating the project.
+        user = get_or_create_default_user(db)
 
-project = Project(
-    user_id=user.id,
-    name=name,
-    source="github_url",
-    source_ref=github_url,
-)
-db.add(project)
-db.commit()
-db.refresh(project)
+        # Associate the GitHub project with the user.
+        project = Project(
+            user_id=user.id,
+            name=name,
+            source="github_url",
+            source_ref=github_url,
+        )
 
-        repo_path = os.path.join(STORAGE_ROOT, project.id)
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+
+        repo_path = os.path.join(
+            STORAGE_ROOT,
+            project.id,
+        )
+
         try:
             result = subprocess.run(
-                ["git", "clone", "--depth", "1", github_url, repo_path],
+                [
+                    "git",
+                    "clone",
+                    "--depth",
+                    "1",
+                    github_url,
+                    repo_path,
+                ],
                 capture_output=True,
                 text=True,
                 timeout=60,
             )
+
         except FileNotFoundError:
-            _mark_failed_and_raise(db, project, 500, "git is not installed on this server.")
+            _mark_failed_and_raise(
+                db,
+                project,
+                500,
+                "git is not installed on this server.",
+            )
+
         except subprocess.TimeoutExpired:
-            _mark_failed_and_raise(db, project, 504, "git clone timed out after 60 seconds.")
+            _mark_failed_and_raise(
+                db,
+                project,
+                504,
+                "git clone timed out after 60 seconds.",
+            )
 
         if result.returncode != 0:
-            _mark_failed_and_raise(db, project, 400, f"git clone failed: {result.stderr[:300]}")
+            _mark_failed_and_raise(
+                db,
+                project,
+                400,
+                f"git clone failed: {result.stderr[:300]}",
+            )
 
-    background_tasks.add_task(_run_parse_job, project.id, repo_path)
+    # ---------------------------------------------------------
+    # BACKGROUND PARSING
+    # ---------------------------------------------------------
+    background_tasks.add_task(
+        _run_parse_job,
+        project.id,
+        repo_path,
+    )
 
+    # ---------------------------------------------------------
+    # RESPONSE
+    # ---------------------------------------------------------
     return {
         "project_id": project.id,
         "name": project.name,
@@ -279,9 +423,27 @@ db.refresh(project)
 
 
 @router.get("/upload/{project_id}/status")
-@router.get("/projects/{project_id}/status", include_in_schema=False)
-def get_status(project_id: str, db: Session = Depends(get_db)):
-    project = db.query(Project).filter(Project.id == project_id).first()
+@router.get(
+    "/projects/{project_id}/status",
+    include_in_schema=False,
+)
+def get_status(
+    project_id: str,
+    db: Session = Depends(get_db),
+):
+    project = (
+        db.query(Project)
+        .filter(Project.id == project_id)
+        .first()
+    )
+
     if not project:
-        raise HTTPException(404, "Project not found.")
-    return {"project_id": project.id, "status": project.status}
+        raise HTTPException(
+            404,
+            "Project not found.",
+        )
+
+    return {
+        "project_id": project.id,
+        "status": project.status,
+    }
