@@ -5,15 +5,27 @@ from sqlalchemy.orm import sessionmaker
 
 from models.db_models import Base
 
-# Defaults to a local SQLite file so you can run this with zero setup during
-# the hackathon. Swap DATABASE_URL to your Postgres connection string
-# (e.g. postgresql://user:pass@localhost:5432/codelens) when you're ready —
-# no code changes needed elsewhere.
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./codelens.db")
 
-connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is not configured. "
+        "Set it in the environment before starting the backend."
+    )
+
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+)
+
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+)
 
 
 def init_db():
@@ -22,6 +34,7 @@ def init_db():
 
 def get_db():
     db = SessionLocal()
+
     try:
         yield db
     finally:
