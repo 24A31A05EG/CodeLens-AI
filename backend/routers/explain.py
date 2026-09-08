@@ -88,12 +88,23 @@ def _explain_one(
     )
 
     if cached:
-        return {
+    log_action(
+        db=db,
+        action="EXPLAIN_CODE",
+        project_id=project_id,
+        details={
             "file_path": cached.file_path,
             "level": cached.level,
-            "explanation": cached.content,
             "cached": True,
-        }
+        },
+    )
+
+    return {
+        "file_path": cached.file_path,
+        "level": cached.level,
+        "explanation": cached.content,
+        "cached": True,
+    }
 
     full_path = _resolve_project_file(
         project_id,
