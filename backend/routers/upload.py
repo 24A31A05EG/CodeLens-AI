@@ -7,15 +7,23 @@ import tempfile
 import zipfile
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+)
 from sqlalchemy.orm import Session
 
 from db.database import SessionLocal, get_db
 from models.db_models import Chunk, Project, ProjectFile
 from services.ai_client import embed_text
+from services.audit import log_action
 from services.parser import EXT_TO_LANG, chunk_file, parse_project
 from services.user_service import get_or_create_default_user
-from services.audit import log_action
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +76,10 @@ def _extract_zip_safely(
 ) -> None:
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
-            total_uncompressed = sum(item.file_size for item in zf.infolist())
+            total_uncompressed = sum(
+                item.file_size for item in zf.infolist()
+            )
+
             if total_uncompressed > MAX_UPLOAD_BYTES * 10:
                 _mark_failed_and_raise(
                     db,
@@ -78,9 +89,15 @@ def _extract_zip_safely(
                 )
 
             real_root = os.path.realpath(repo_path)
+
             for member in zf.infolist():
-                target = os.path.realpath(os.path.join(repo_path, member.filename))
-                if os.path.commonpath([real_root, target]) != real_root:
+                target = os.path.realpath(
+                    os.path.join(repo_path, member.filename)
+                )
+
+                if os.path.commonpath(
+                    [real_root, target]
+                ) != real_root:
                     _mark_failed_and_raise(
                         db,
                         project,
@@ -89,6 +106,7 @@ def _extract_zip_safely(
                     )
 
             zf.extractall(repo_path)
+
     except zipfile.BadZipFile:
         _mark_failed_and_raise(
             db,
@@ -106,10 +124,17 @@ def _run_parse_job(project_id: str, repo_path: str) -> None:
     db = SessionLocal()
 
     try:
-        project = db.query(Project).filter(Project.id == project_id).first()
+        project = (
+            db.query(Project)
+            .filter(Project.id == project_id)
+            .first()
+        )
 
         if not project:
-            logger.error("Parse job: project %s not found.", project_id)
+            logger.error(
+                "Parse job: project %s not found.",
+                project_id,
+            )
             return
 
         try:
@@ -118,6 +143,7 @@ def _run_parse_job(project_id: str, repo_path: str) -> None:
             if not parsed_files:
                 project.status = "failed"
                 db.commit()
+
                 logger.warning(
                     "Parse job found no supported files for project %s.",
                     project_id,
@@ -144,6 +170,7 @@ def _run_parse_job(project_id: str, repo_path: str) -> None:
                 for chunk_text in chunks:
                     try:
                         embedding = embed_text(chunk_text)
+
                     except Exception:
                         logger.warning(
                             "Embedding failed for %s in project %s; "
@@ -256,10 +283,10 @@ async def upload_project(
             else filename
         )
 
-        # Get or create the default user before creating the project.
+        # Get or create the default user.
         user = get_or_create_default_user(db)
 
-        # Associate the project with the user.
+        # Create the project and associate it with the user.
         project = Project(
             user_id=user.id,
             name=project_name,
@@ -270,6 +297,18 @@ async def upload_project(
         db.add(project)
         db.commit()
         db.refresh(project)
+
+        # Record project creation in audit log.
+        log_action(
+            db=db,
+            action="project_created",
+            user_id=user.id,
+            project_id=project.id,
+            details={
+                "source": "upload",
+                "source_ref": filename,
+            },
+        )
 
         repo_path = os.path.join(
             STORAGE_ROOT,
@@ -343,10 +382,10 @@ async def upload_project(
             .replace(".git", "")
         )
 
-        # Get or create the default user before creating the project.
+        # Get or create the default user.
         user = get_or_create_default_user(db)
 
-        # Associate the GitHub project with the user.
+        # Create the project and associate it with the user.
         project = Project(
             user_id=user.id,
             name=name,
@@ -357,6 +396,18 @@ async def upload_project(
         db.add(project)
         db.commit()
         db.refresh(project)
+
+        # Record project creation in audit log.
+        log_action(
+            db=db,
+            action="project_created",
+            user_id=user.id,
+            project_id=project.id,
+            details={
+                "source": "github_url",
+                "source_ref": github_url,
+            },
+        )
 
         repo_path = os.path.join(
             STORAGE_ROOT,
