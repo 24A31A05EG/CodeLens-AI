@@ -197,12 +197,19 @@ async def upload_project(
                     400,
                     f"Unsupported file type '{extension or 'none'}'. Supported: {supported}",
                 )
-
         project_name = os.path.splitext(filename)[0] if is_zip else filename
-        project = Project(name=project_name, source="upload", source_ref=filename)
-        db.add(project)
-        db.commit()
-        db.refresh(project)
+
+        user = get_or_create_default_user(db)
+
+project = Project(
+    user_id=user.id,
+    name=project_name,
+    source="upload",
+    source_ref=filename,
+)
+db.add(project)
+db.commit()
+db.refresh(project)
 
         repo_path = os.path.join(STORAGE_ROOT, project.id)
         os.makedirs(repo_path, exist_ok=True)
@@ -232,10 +239,18 @@ async def upload_project(
             )
 
         name = github_url.rstrip("/").split("/")[-1].replace(".git", "")
-        project = Project(name=name, source="github_url", source_ref=github_url)
-        db.add(project)
-        db.commit()
-        db.refresh(project)
+
+user = get_or_create_default_user(db)
+
+project = Project(
+    user_id=user.id,
+    name=name,
+    source="github_url",
+    source_ref=github_url,
+)
+db.add(project)
+db.commit()
+db.refresh(project)
 
         repo_path = os.path.join(STORAGE_ROOT, project.id)
         try:
