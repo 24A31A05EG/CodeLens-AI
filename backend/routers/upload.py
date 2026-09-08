@@ -14,6 +14,8 @@ from db.database import SessionLocal, get_db
 from models.db_models import Chunk, Project, ProjectFile
 from services.ai_client import embed_text
 from services.parser import EXT_TO_LANG, chunk_file, parse_project
+from services.user_service import get_or_create_default_user
+from services.audit import log_action
 
 logger = logging.getLogger(__name__)
 
