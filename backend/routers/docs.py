@@ -61,7 +61,21 @@ def generate_docs(req: DocsRequest, db: Session = Depends(get_db)):
 
     content = generate_readme(summary) if req.kind == "readme" else generate_api_docs(summary)
 
-    db.add(GeneratedArtifact(project_id=req.project_id, kind=req.kind, content=content))
+    db.add(
+        GeneratedArtifact(
+            project_id=req.project_id, 
+            kind=req.kind, 
+            content=content,
+        )
+    )
     db.commit()
+    log_action(
+    db=db,
+    action="GENERATE_DOCUMENTATION",
+    project_id=req.project_id,
+    details={
+        "kind": req.kind,
+    },
+)
 
     return {"kind": req.kind, "content": content, "cached": False}
