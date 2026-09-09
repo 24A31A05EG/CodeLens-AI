@@ -2,6 +2,7 @@ import io
 import logging
 import os
 import re
+import stat
 import subprocess
 import tempfile 
 import zipfile
@@ -19,11 +20,11 @@ from fastapi import (
 from sqlalchemy.orm import Session
 
 from db.database import SessionLocal, get_db
-from models.db_models import Chunk, Project, ProjectFile
+from models.db_models import Chunk, Project, ProjectFile, User
+from services.access import get_current_user, get_owned_project
 from services.ai_client import embed_text
 from services.audit import log_action
 from services.parser import EXT_TO_LANG, chunk_file, parse_project
-from services.user_service import get_or_create_default_user
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ STORAGE_ROOT = os.getenv(
 os.makedirs(STORAGE_ROOT, exist_ok=True)
 
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "100")) * 1024 * 1024
+MAX_ZIP_MEMBERS = 10_000
 
 _ALLOWED_GIT_URL = re.compile(
     r"^https://(github\.com|gitlab\.com|bitbucket\.org)/[\w.\-]+/[\w.\-]+(\.git)?/?$",
@@ -76,9 +78,17 @@ def _extract_zip_safely(
 ) -> None:
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
-            total_uncompressed = sum(
-                item.file_size for item in zf.infolist()
-            )
+            members = zf.infolist()
+
+            if len(members) > MAX_ZIP_MEMBERS:
+                _mark_failed_and_raise(
+                    db,
+                    project,
+                    400,
+                    "Zip contains too many files.",
+                )
+
+            total_uncompressed = sum(item.file_size for item in members)
 
             if total_uncompressed > MAX_UPLOAD_BYTES * 10:
                 _mark_failed_and_raise(
@@ -90,7 +100,23 @@ def _extract_zip_safely(
 
             real_root = os.path.realpath(repo_path)
 
-            for member in zf.infolist():
+            for member in members:
+                mode = (member.external_attr >> 16) & 0xFFFF
+                file_type = stat.S_IFMT(mode)
+                if file_type in {
+                    stat.S_IFBLK,
+                    stat.S_IFCHR,
+                    stat.S_IFIFO,
+                    stat.S_IFLNK,
+                    stat.S_IFSOCK,
+                }:
+                    _mark_failed_and_raise(
+                        db,
+                        project,
+                        400,
+                        "Zip contains unsafe special-file entries.",
+                    )
+
                 target = os.path.realpath(
                     os.path.join(repo_path, member.filename)
                 )
@@ -224,6 +250,7 @@ def _run_parse_job(project_id: str, repo_path: str) -> None:
 async def upload_project(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     file: Optional[UploadFile] = File(None),
     github_url: Optional[str] = Form(None),
 ):
@@ -283,12 +310,8 @@ async def upload_project(
             else filename
         )
 
-        # Get or create the default user.
-        user = get_or_create_default_user(db)
-
-        # Create the project and associate it with the user.
         project = Project(
-            user_id=user.id,
+            user_id=current_user.id,
             name=project_name,
             source="upload",
             source_ref=filename,
@@ -302,7 +325,7 @@ async def upload_project(
         log_action(
             db=db,
             action="UPLOAD_PROJECT",
-            user_id=user.id,
+            user_id=current_user.id,
             project_id=project.id,
             details={
                 "source": project.source,
@@ -382,12 +405,8 @@ async def upload_project(
             .replace(".git", "")
         )
 
-        # Get or create the default user.
-        user = get_or_create_default_user(db)
-
-        # Create the project and associate it with the user.
         project = Project(
-            user_id=user.id,
+            user_id=current_user.id,
             name=name,
             source="github_url",
             source_ref=github_url,
@@ -401,7 +420,7 @@ async def upload_project(
         log_action(
             db=db,
             action="UPLOAD_PROJECT",
-            user_id=user.id,
+            user_id=current_user.id,
             project_id=project.id,
             details={
                 "source": "github_url",
@@ -481,18 +500,9 @@ async def upload_project(
 def get_status(
     project_id: str,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    project = (
-        db.query(Project)
-        .filter(Project.id == project_id)
-        .first()
-    )
-
-    if not project:
-        raise HTTPException(
-            404,
-            "Project not found.",
-        )
+    project = get_owned_project(project_id, db, current_user)
 
     return {
         "project_id": project.id,

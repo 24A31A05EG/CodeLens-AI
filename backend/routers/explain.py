@@ -7,8 +7,9 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from db.database import get_db
-from models.db_models import Explanation, Project, ProjectFile
+from models.db_models import Explanation, Project, ProjectFile, User
 from routers.upload import STORAGE_ROOT
+from services.access import get_current_user, get_owned_project
 from services.ai_client import explain_code
 from services.audit import log_action
 
@@ -88,23 +89,23 @@ def _explain_one(
     )
 
     if cached:
-    log_action(
-        db=db,
-        action="EXPLAIN_CODE",
-        project_id=project_id,
-        details={
+        log_action(
+            db=db,
+            action="EXPLAIN_CODE",
+            project_id=project_id,
+            details={
+                "file_path": cached.file_path,
+                "level": cached.level,
+                "cached": True,
+            },
+        )
+
+        return {
             "file_path": cached.file_path,
             "level": cached.level,
+            "explanation": cached.content,
             "cached": True,
-        },
-    )
-
-    return {
-        "file_path": cached.file_path,
-        "level": cached.level,
-        "explanation": cached.content,
-        "cached": True,
-    }
+        }
 
     full_path = _resolve_project_file(
         project_id,
@@ -158,18 +159,9 @@ def _explain_one(
 def explain(
     req: ExplainRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    project = (
-        db.query(Project)
-        .filter(Project.id == req.project_id)
-        .first()
-    )
-
-    if not project:
-        raise HTTPException(
-            404,
-            "Project not found.",
-        )
+    project = get_owned_project(req.project_id, db, current_user)
 
     guard_response = _guard_project_ready(project)
 
@@ -193,7 +185,7 @@ def explain(
 
         return {
             "project_id": req.project_id,
-            **result, 
+            **result,
         }
 
     project_files = (

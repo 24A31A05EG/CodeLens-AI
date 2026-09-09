@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from db.database import get_db
-from models.db_models import AuditLog
+from models.db_models import AuditLog, Project, User
+from services.access import get_current_user, get_owned_project
 
 
 router = APIRouter()
@@ -12,8 +13,19 @@ router = APIRouter()
 def get_audit_logs(
     project_id: str | None = None,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    query = db.query(AuditLog)
+    if project_id:
+        get_owned_project(project_id, db, current_user)
+
+    query = (
+        db.query(AuditLog)
+        .outerjoin(Project, AuditLog.project_id == Project.id)
+        .filter(
+            (AuditLog.user_id == current_user.id)
+            | (Project.user_id == current_user.id)
+        )
+    )
 
     if project_id:
         query = query.filter(

@@ -4,8 +4,10 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from db.database import get_db
-from models.db_models import Project, ProjectFile, GeneratedArtifact
+from models.db_models import ProjectFile, GeneratedArtifact, User
+from services.access import get_current_user, get_owned_project
 from services.ai_client import generate_mermaid_diagram
+from services.audit import log_action
 
 router = APIRouter()
 
@@ -17,10 +19,12 @@ class DiagramRequest(BaseModel):
 
 
 @router.post("")
-def generate_diagram(req: DiagramRequest, db: Session = Depends(get_db)):
-    project = db.query(Project).filter(Project.id == req.project_id).first()
-    if not project:
-        raise HTTPException(404, "Project not found.")
+def generate_diagram(
+    req: DiagramRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = get_owned_project(req.project_id, db, current_user)
 
     # ── Status guard ─────────────────────────────────────────────────────────
     if project.status == "processing":
