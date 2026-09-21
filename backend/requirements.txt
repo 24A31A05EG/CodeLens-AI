@@ -5,3 +5,9 @@ pydantic>=2.7
 python-multipart>=0.0.9
 psycopg2-binary>=2.9
 # pgvector>=0.3
+python-dotenv>=1.0
+# test dependencies (TestClient needs httpx)
+httpx>=0.27
+pytest>=8.0
+# Optional external LLM provider (enabled with CODELENS_ENABLE_GEMINI=1)
+google-genai>=1.0.0

@@ -1,10 +1,13 @@
 import os
 
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from models.db_models import Base
 
+
+load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -13,7 +16,6 @@ if not DATABASE_URL:
         "DATABASE_URL is not configured. "
         "Set it in the environment before starting the backend."
     )
-
 
 engine = create_engine(
     DATABASE_URL,

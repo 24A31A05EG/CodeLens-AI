@@ -69,3 +69,32 @@ Interactive API documentation will be available at [http://127.0.0.1:8000/docs](
 ```bash
 python test_endpoints.py
 ```
+
+---
+
+## Project-aware analysis
+
+Uploads are analysed statically (`services/analysis/`): per-file facts, a relationship graph (imports, renders, calls, mounts, loads, inferred API links) and a project overview. Explanations, docs, diagrams and Ask answers are generated from that analysis for the single project being queried. The local static/project-intelligence pipeline remains the default; an optional Google Gemini model can be enabled through the documented environment variables.
+
+Extra endpoints: `GET /projects/{id}/overview`, `GET /projects/{id}/graph`. Existing responses gained optional fields (`analysis`, `source`, `intent`, `tree`, `stats`).
+
+Run tests: `cd backend && python -m pytest -q` (defaults to a throw-away SQLite DB via `conftest.py`).
+
+## Optional Google Gemini integration
+
+CodeLens keeps its local static/project-intelligence pipeline as the fallback and can optionally use Google Gemini to rewrite verified project context into richer explanations and answers. Google documents the `google-genai` SDK and `GEMINI_API_KEY` environment variable for Gemini API access.
+
+1. Create a Gemini API key in Google AI Studio.
+2. Install backend requirements.
+3. Set the variables below.
+4. Start the backend with Gemini enabled.
+
+```env
+CODELENS_ENABLE_GEMINI=1
+GEMINI_API_KEY=your_key
+GEMINI_MODEL=gemini-3.8-flash
+GEMINI_MAX_OUTPUT_TOKENS=700
+GEMINI_TEMPERATURE=0.2
+```
+
+If the key, SDK, model, network, or quota is unavailable, CodeLens automatically falls back to the existing deterministic/static analysis. Successful model output is labelled `ai-assisted (Google Gemini)` and fallback output as `static-analysis`.

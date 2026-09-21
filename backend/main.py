@@ -12,6 +12,7 @@ from routers import (
     docs,
     explain,
     history,
+    impact,
     structure,
     upload,
 )
@@ -47,6 +48,7 @@ app.include_router(docs.router, prefix="/generate-docs", tags=["docs"])
 app.include_router(diagram.router, prefix="/generate-diagram", tags=["diagram"])
 app.include_router(history.router, tags=["history"])
 app.include_router(ask.router, prefix="/ask", tags=["ask"])
+app.include_router(impact.router, prefix="/tools", tags=["impact-refactor"])
 
 app.include_router(
     audit.router,

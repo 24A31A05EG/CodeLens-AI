@@ -9,6 +9,7 @@ from sqlalchemy import (
     Text,
     JSON,
     Index,
+    Integer,
 )
 from sqlalchemy.orm import declarative_base
 
@@ -241,6 +242,54 @@ class AuditLog(Base):
     )
 
 
+class ProjectAnalysis(Base):
+    """Project-level static analysis (graph + context). One row per project.
+
+    Kept in its own table so existing databases pick it up via ``create_all``
+    without altering any existing table.
+    """
+
+    __tablename__ = "project_analyses"
+
+    id = Column(String, primary_key=True, default=gen_id)
+
+    project_id = Column(
+        String,
+        ForeignKey("projects.id"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    version = Column(Integer, nullable=False, default=1)  # analyzer version
+    context = Column(JSON, nullable=False)  # project overview / architecture
+    graph = Column(JSON, nullable=False)  # nodes, edges, endpoints, entry points
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+
+class FileAnalysis(Base):
+    """Per-file extracted facts (functions, imports, routes, kind, tags ...)."""
+
+    __tablename__ = "file_analyses"
+
+    id = Column(String, primary_key=True, default=gen_id)
+
+    project_id = Column(
+        String,
+        ForeignKey("projects.id"),
+        nullable=False,
+        index=True,
+    )
+
+    path = Column(String(1000), nullable=False)
+    facts = Column(JSON, nullable=False)
+
+
 Index(
     "ix_project_files_project_path",
     ProjectFile.project_id,
@@ -258,4 +307,10 @@ Index(
     "ix_artifacts_project_kind",
     GeneratedArtifact.project_id,
     GeneratedArtifact.kind,
+)
+
+Index(
+    "ix_file_analyses_project_path",
+    FileAnalysis.project_id,
+    FileAnalysis.path,
 )

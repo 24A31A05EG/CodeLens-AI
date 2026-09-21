@@ -596,3 +596,11 @@ IBM Bob remains a development-time tool throughout this phase and is not added t
 - Do not add IBM Bob runtime functionality, credentials, SDKs, or fake provider behavior.
 - Do not treat the unintegrated `code-intelligence/` prototype as active product functionality.
 - Do not commit secrets or inspect the contents of local environment files into documentation.
+
+## Engineering Differentiators
+
+### Change Impact Analyzer
+CodeLens computes a deterministic change blast radius from the verified project relationship graph. It reports direct dependents, indirect dependents, entry-point involvement, endpoint involvement, and an explainable impact score. Gemini is used only to summarize those verified facts.
+
+### Safe Refactor Planner
+CodeLens accepts a proposed change for a selected file and creates an evidence-backed refactor checklist using the same project graph. It does not edit source files automatically. Gemini can turn the verified checklist into a concise developer plan without inventing relationships.

@@ -1,10 +1,154 @@
 import { useEffect, useRef, useState } from "react";
+import mermaid from "mermaid";
 import "./App.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
+let mermaidRenderCounter = 0;
+
+function MermaidDiagram({ chart }) {
+  const containerRef = useRef(null);
+  const [renderError, setRenderError] = useState("");
+  const [svgMarkup, setSvgMarkup] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const renderDiagram = async () => {
+      if (!containerRef.current || !chart) return;
+
+      setRenderError("");
+      setSvgMarkup("");
+      containerRef.current.innerHTML = "";
+
+      // The backend may return plain Mermaid or a fenced ```mermaid block.
+      const source = chart
+        .replace(/^\s*```mermaid\s*/i, "")
+        .replace(/\s*```\s*$/i, "")
+        .trim();
+
+      try {
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          theme: "default",
+          flowchart: {
+            useMaxWidth: true,
+            htmlLabels: true,
+            curve: "basis",
+          },
+        });
+
+        const renderId = `codelens-mermaid-${++mermaidRenderCounter}`;
+        const { svg, bindFunctions } = await mermaid.render(renderId, source);
+
+        if (cancelled || !containerRef.current) return;
+
+        containerRef.current.innerHTML = svg;
+        setSvgMarkup(svg);
+        bindFunctions?.(containerRef.current);
+      } catch (error) {
+        if (cancelled) return;
+        console.error("Mermaid render failed:", error);
+        setRenderError(error?.message || "Unable to render Mermaid diagram.");
+      }
+    };
+
+    renderDiagram();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chart]);
+
+  const downloadSvg = () => {
+    if (!svgMarkup) return;
+    const blob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "architecture-diagram.svg";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="mermaid-section">
+      <div className="documentation-preview mermaid-card">
+        <div className="mermaid-header-row">
+          <div>
+            <h3>Architecture Flow Diagram</h3>
+            <p>Generated from the project's detected file relationships as a scalable SVG.</p>
+          </div>
+          <button
+            className="browse-btn mermaid-download-btn"
+            onClick={downloadSvg}
+            disabled={!svgMarkup}
+            title="Download the rendered Mermaid graph as an SVG file"
+          >
+            ↓ Download SVG
+          </button>
+        </div>
+        {renderError ? (
+          <div className="error-banner" style={{ marginTop: "12px" }}>
+            Mermaid renderer error: {renderError}
+          </div>
+        ) : (
+          <div className="mermaid-svg-viewport">
+            <div ref={containerRef} className="mermaid-renderer" aria-label="Architecture flow diagram" />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Renders the structured render/import tree returned by /generate-diagram.
+// Plain JSX (React escapes all text), so untrusted file names cannot inject markup.
+function TreeNode({ node }) {
+  return (
+    <li>
+      <span className="tree-path">{node.path}</span>
+      {node.via && <span className="tree-via">{node.via}</span>}
+      {node.repeat && <span className="tree-via">see above</span>}
+      {node.children && node.children.length > 0 && (
+        <ul className="tree-list">
+          {node.children.map((child, idx) => (
+            <TreeNode key={`${child.path}-${idx}`} node={child} />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+function RelationList({ title, items, onSelect }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div className="insight-card">
+      <h4>{title}</h4>
+      <ul className="relation-list">
+        {items.map((item, idx) => (
+          <li key={`${item.path}-${idx}`}>
+            <button type="button" className="link-btn" onClick={() => onSelect(item.path)}>
+              {item.path}
+            </button>
+            <span className="tree-via">{item.relation}</span>
+            {item.confidence === "inferred" && <span className="badge badge-warn">inferred</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function App() {
   const fileInputRef = useRef(null);
+  // Tracks the project the UI is currently showing, so responses that arrive
+  // after the user switched projects are discarded instead of shown.
+  const activeProjectRef = useRef(null);
 
   const [activePage, setActivePage] = useState("Dashboard");
   const [selectedFile, setSelectedFile] = useState(null);
@@ -36,8 +180,19 @@ function App() {
   const [asking, setAsking] = useState(false);
 
   // History State
+  const [overview, setOverview] = useState(null);
+  const [diagramData, setDiagramData] = useState(null);
+
+  // Change Impact + Safe Refactor
+  const [impactResult, setImpactResult] = useState(null);
+  const [impactLoading, setImpactLoading] = useState(false);
+  const [refactorDescription, setRefactorDescription] = useState("");
+  const [refactorResult, setRefactorResult] = useState(null);
+  const [refactorLoading, setRefactorLoading] = useState(false);
+
   const [historyList, setHistoryList] = useState([]);
-  const [loadingHistory, setLoadingHistory] = useState(false);
+  // Starts true: the first history fetch is triggered by the effect below.
+  const [loadingHistory, setLoadingHistory] = useState(true);
 
   const menuItems = [
     { name: "Dashboard", icon: "⌂" },
@@ -46,17 +201,13 @@ function App() {
     { name: "Documentation", icon: "▤" },
     { name: "Architecture", icon: "◇" },
     { name: "Ask Codebase", icon: "✦" },
+    { name: "Change Impact", icon: "⚡" },
+    { name: "Safe Refactor", icon: "🛡" },
     { name: "History", icon: "◷" },
   ];
 
-  // Fetch history whenever activePage is switched to History or Dashboard
-  useEffect(() => {
-    fetchHistory();
-  }, [activePage]);
-
   const fetchHistory = async () => {
     try {
-      setLoadingHistory(true);
       const res = await fetch(`${API_BASE}/history`);
       if (res.ok) {
         const data = await res.json();
@@ -67,6 +218,39 @@ function App() {
     } finally {
       setLoadingHistory(false);
     }
+  };
+
+  // Refresh history whenever the active page changes (History and Dashboard show it).
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/history`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data) setHistoryList(data.projects || []);
+      })
+      .catch((err) => console.error("Failed to fetch history:", err))
+      .finally(() => {
+        if (!cancelled) setLoadingHistory(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activePage]);
+
+  // Clears everything that belongs to the previously shown project.
+  const resetProjectState = () => {
+    setExplanationResult(null);
+    setDocContent("");
+    setDiagramMermaid("");
+    setDiagramData(null);
+    setQaAnswer(null);
+    setImpactResult(null);
+    setRefactorResult(null);
+    setRefactorDescription("");
+    setOverview(null);
+    setProjectData(null);
+    setSelectedFilePath("");
+    setQuestion("");
   };
 
   const pollProjectStatus = async (pId) => {
@@ -92,13 +276,22 @@ function App() {
 
   const loadProjectStructure = async (pId) => {
     try {
-      const res = await fetch(`${API_BASE}/projects/${pId}/structure`);
-      if (res.ok) {
-        const data = await res.json();
+      const [structRes, overviewRes] = await Promise.all([
+        fetch(`${API_BASE}/projects/${pId}/structure`),
+        fetch(`${API_BASE}/projects/${pId}/overview`),
+      ]);
+      if (activeProjectRef.current !== pId) return;
+      if (structRes.ok) {
+        const data = await structRes.json();
+        if (activeProjectRef.current !== pId) return;
         setProjectData(data);
         if (data.files && data.files.length > 0) {
           setSelectedFilePath(data.files[0].path);
         }
+      }
+      if (overviewRes.ok) {
+        const ov = await overviewRes.json();
+        if (activeProjectRef.current === pId) setOverview(ov);
       }
     } catch (err) {
       console.error("Failed to load structure:", err);
@@ -155,6 +348,8 @@ function App() {
 
       const uploadData = await res.json();
       const pId = uploadData.project_id;
+      activeProjectRef.current = pId;
+      resetProjectState(); // never show the previous project's results for the new one
       setProjectId(pId);
 
       await pollProjectStatus(pId);
@@ -191,6 +386,7 @@ function App() {
         throw new Error(err.detail || "Explain failed");
       }
       const data = await res.json();
+      if (activeProjectRef.current !== data.project_id) return;
       setExplanationResult(data);
     } catch (err) {
       setErrorMessage(err.message);
@@ -201,6 +397,7 @@ function App() {
 
   const handleGenerateDocs = async (kind = docKind, force = false) => {
     if (!projectId) return;
+    const requestedProject = projectId;
     setGeneratingDocs(true);
     setErrorMessage("");
     try {
@@ -218,6 +415,7 @@ function App() {
         throw new Error(err.detail || "Doc generation failed");
       }
       const data = await res.json();
+      if (activeProjectRef.current !== requestedProject) return;
       setDocContent(data.content);
     } catch (err) {
       setErrorMessage(err.message);
@@ -228,6 +426,7 @@ function App() {
 
   const handleGenerateDiagram = async (force = false) => {
     if (!projectId) return;
+    const requestedProject = projectId;
     setGeneratingDiagram(true);
     setErrorMessage("");
     try {
@@ -244,7 +443,9 @@ function App() {
         throw new Error(err.detail || "Diagram generation failed");
       }
       const data = await res.json();
+      if (activeProjectRef.current !== requestedProject) return;
       setDiagramMermaid(data.mermaid);
+      setDiagramData(data);
     } catch (err) {
       setErrorMessage(err.message);
     } finally {
@@ -252,9 +453,93 @@ function App() {
     }
   };
 
-  const handleAsk = async (e) => {
+  const handleImpact = async (file = selectedFilePath, questionText = "") => {
+    if (!projectId || !file) return;
+    const requestedProject = projectId;
+    setImpactLoading(true);
+    setErrorMessage("");
+    try {
+      // Return the deterministic graph analysis immediately. Gemini enhancement
+      // is requested separately so a slow model/API call never blocks the UI.
+      const res = await fetch(`${API_BASE}/tools/impact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: projectId, file_path: file, question: questionText }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Impact analysis failed");
+      if (activeProjectRef.current !== requestedProject) return;
+      setImpactResult(data);
+
+      // Enhance in the background. The static result is already visible.
+      fetch(`${API_BASE}/tools/impact?include_ai=true`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: projectId, file_path: file, question: questionText }),
+      })
+        .then((aiRes) => aiRes.json())
+        .then((aiData) => {
+          if (activeProjectRef.current !== requestedProject || !aiData.ai_explanation) return;
+          setImpactResult((current) => current ? { ...current, ai_explanation: aiData.ai_explanation, source: aiData.source, ai_pending: false } : current);
+        })
+        .catch(() => {
+          // Static analysis remains valid if Gemini is slow/unavailable.
+        });
+    } catch (err) {
+      setErrorMessage(err.message);
+    } finally {
+      setImpactLoading(false);
+    }
+  };
+
+  const handleSafeRefactor = async () => {
+    if (!projectId || !selectedFilePath || !refactorDescription.trim()) return;
+    const requestedProject = projectId;
+    setRefactorLoading(true);
+    setErrorMessage("");
+    try {
+      // Build the evidence-backed checklist locally first so the result is immediate.
+      const payload = {
+        project_id: projectId,
+        file_path: selectedFilePath,
+        proposed_change: refactorDescription.trim(),
+      };
+      const res = await fetch(`${API_BASE}/tools/safe-refactor`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Safe refactor planning failed");
+      if (activeProjectRef.current !== requestedProject) return;
+      setRefactorResult(data);
+
+      // Ask Gemini in the background. The verified checklist does not wait for it.
+      fetch(`${API_BASE}/tools/safe-refactor?include_ai=true`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+        .then((aiRes) => aiRes.json())
+        .then((aiData) => {
+          if (activeProjectRef.current !== requestedProject || !aiData.ai_plan) return;
+          setRefactorResult((current) => current ? { ...current, ai_plan: aiData.ai_plan, source: aiData.source, ai_pending: false } : current);
+        })
+        .catch(() => {
+          // Static refactor plan remains available if Gemini is slow/unavailable.
+        });
+    } catch (err) {
+      setErrorMessage(err.message);
+    } finally {
+      setRefactorLoading(false);
+    }
+  };
+
+  const handleAsk = async (e, presetQuestion) => {
     e?.preventDefault();
-    if (!projectId || !question.trim()) return;
+    const asked = (presetQuestion ?? question).trim();
+    if (!projectId || !asked) return;
+    const requestedProject = projectId;
     setAsking(true);
     setErrorMessage("");
     try {
@@ -263,7 +548,7 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           project_id: projectId,
-          question: question.trim(),
+          question: asked,
         }),
       });
       if (!res.ok) {
@@ -271,6 +556,7 @@ function App() {
         throw new Error(err.detail || "Q&A failed");
       }
       const data = await res.json();
+      if (activeProjectRef.current !== requestedProject) return;
       setQaAnswer(data);
     } catch (err) {
       setErrorMessage(err.message);
@@ -280,12 +566,10 @@ function App() {
   };
 
   const handleSelectHistoryProject = async (pId, name) => {
+    activeProjectRef.current = pId;
     setProjectId(pId);
     setSelectedFile({ name: name || "Archived Project", size: 1024 });
-    setExplanationResult(null);
-    setDocContent("");
-    setDiagramMermaid("");
-    setQaAnswer(null);
+    resetProjectState();
     await loadProjectStructure(pId);
     setActivePage("Code Analysis");
   };
@@ -391,7 +675,7 @@ function App() {
         <div className="stat-card">
           <div className="stat-icon">📝</div>
           <div>
-            <p>AI Engine</p>
+            <p>Analysis Engine</p>
             <h2>Active</h2>
             <span>FastAPI + Parser</span>
           </div>
@@ -414,7 +698,7 @@ function App() {
               type="file"
               ref={fileInputRef}
               onChange={handleFileChange}
-              accept=".py,.java,.js,.jsx,.ts,.tsx,.cpp,.c,.cs,.go,.rs,.php,.html,.css,.json,.zip"
+              accept=".py,.java,.js,.jsx,.ts,.tsx,.cpp,.c,.cs,.go,.rs,.php,.html,.css,.scss,.sql,.yaml,.yml,.toml,.md,.json,.zip"
               hidden
             />
 
@@ -575,7 +859,7 @@ function App() {
               type="file"
               ref={fileInputRef}
               onChange={handleFileChange}
-              accept=".py,.java,.js,.jsx,.ts,.tsx,.cpp,.c,.cs,.go,.rs,.php,.html,.css,.json,.zip"
+              accept=".py,.java,.js,.jsx,.ts,.tsx,.cpp,.c,.cs,.go,.rs,.php,.html,.css,.scss,.sql,.yaml,.yml,.toml,.md,.json,.zip"
               hidden
             />
 
@@ -620,6 +904,77 @@ function App() {
             {projectId ? (
               <>
                 <div className="result-status">✓ Project Indexed ({selectedFile?.name || "Active"})</div>
+
+                {overview && (
+                  <div className="overview-panel">
+                    <h3>{overview.name}</h3>
+                    <p className="overview-type">{overview.project_type}</p>
+                    <p className="overview-summary">{overview.summary}</p>
+                    {overview.purpose && (
+                      <p className="overview-purpose">
+                        “{overview.purpose}” <span className="tree-via">{overview.purpose_source}</span>
+                      </p>
+                    )}
+                    <div className="insight-grid">
+                      <div className="insight-card">
+                        <h4>Technology stack</h4>
+                        <div className="sources-tags">
+                          {overview.technologies.map((t) => (
+                            <span key={t.name} className="source-tag" title={t.category}>
+                              {t.name}
+                            </span>
+                          ))}
+                          {overview.tooling.map((t) => (
+                            <span key={t.name} className="source-tag tag-muted" title={`${t.category} (dev)`}>
+                              {t.name}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="insight-card">
+                        <h4>Entry points</h4>
+                        <ul className="relation-list">
+                          {overview.entry_points.map((e) => (
+                            <li key={e.path}>
+                              <button
+                                type="button"
+                                className="link-btn"
+                                onClick={() => {
+                                  setSelectedFilePath(e.path);
+                                  handleExplain(explainLevel, e.path);
+                                }}
+                              >
+                                {e.path}
+                              </button>
+                              <span className="tree-via">{e.reason}</span>
+                            </li>
+                          ))}
+                          {overview.entry_points.length === 0 && <li>None detected</li>}
+                        </ul>
+                      </div>
+                      <div className="insight-card">
+                        <h4>Architecture</h4>
+                        <p className="insight-text">{overview.architecture.style}</p>
+                        {overview.architecture.layer_links.map((l) => (
+                          <p key={l} className="insight-text">{l}</p>
+                        ))}
+                      </div>
+                      <div className="insight-card">
+                        <h4>Subsystems</h4>
+                        <ul className="relation-list">
+                          {overview.subsystems.slice(0, 8).map((sub) => (
+                            <li key={sub.path}>
+                              <strong>{sub.label}</strong> <span className="tree-via">{sub.path}/ · {sub.files} files</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                    {overview.limitations && overview.limitations.length > 0 && (
+                      <p className="insight-note">Analysis notes: {overview.limitations.join(" ")}</p>
+                    )}
+                  </div>
+                )}
 
                 <div className="controls-row">
                   <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
@@ -702,6 +1057,63 @@ function App() {
                   >
                     Generate Explanation
                   </button>
+                )}
+
+                {!explaining && explanationResult?.analysis && (
+                  <div className="file-role-panel">
+                    <div className="badge-row">
+                      <span className="badge">{explanationResult.analysis.role}</span>
+                      {explanationResult.analysis.subsystem && (
+                        <span className="badge badge-soft">{explanationResult.analysis.subsystem}</span>
+                      )}
+                      {explanationResult.analysis.entry && <span className="badge badge-warn">entry point</span>}
+                      <span className="badge badge-soft">
+                        analysis confidence: {explanationResult.analysis.confidence}
+                      </span>
+                      <span className="badge badge-soft">source: {explanationResult.source}</span>
+                    </div>
+                    <div className="insight-grid">
+                      <RelationList
+                        title="Dependencies"
+                        items={explanationResult.analysis.depends_on}
+                        onSelect={(path) => {
+                          setSelectedFilePath(path);
+                          handleExplain(explainLevel, path);
+                        }}
+                      />
+                      <RelationList
+                        title="Used by"
+                        items={explanationResult.analysis.used_by}
+                        onSelect={(path) => {
+                          setSelectedFilePath(path);
+                          handleExplain(explainLevel, path);
+                        }}
+                      />
+                    </div>
+                    {explanationResult.analysis.related_files.length > 0 && (
+                      <div className="insight-card">
+                        <h4>Related files</h4>
+                        <div className="sources-tags">
+                          {explanationResult.analysis.related_files.map((path) => (
+                            <button
+                              key={path}
+                              type="button"
+                              className="source-tag source-tag-btn"
+                              onClick={() => {
+                                setSelectedFilePath(path);
+                                handleExplain(explainLevel, path);
+                              }}
+                            >
+                              {path}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {explanationResult.analysis.warnings.length > 0 && (
+                      <p className="insight-note">{explanationResult.analysis.warnings.join(" ")}</p>
+                    )}
+                  </div>
                 )}
               </>
             ) : (
@@ -813,7 +1225,7 @@ function App() {
           <div className="page-heading">
             <span className="section-label">ARCHITECTURE</span>
             <h1>Architecture Visualization</h1>
-            <p>Module dependency graph extracted from static code imports.</p>
+            <p>How the project starts and how its files render, mount, call and import each other.</p>
           </div>
 
           {errorMessage && <div className="error-banner">{errorMessage}</div>}
@@ -822,7 +1234,7 @@ function App() {
             {projectId ? (
               <>
                 <div className="controls-row">
-                  <div className="result-status">✓ Dependency Graph Ready</div>
+                  <div className="result-status">✓ Relationship Graph Ready</div>
                   <button
                     className="browse-btn"
                     style={{ margin: 0, padding: "8px 16px", fontSize: "13px" }}
@@ -840,13 +1252,45 @@ function App() {
                   </div>
                 ) : diagramMermaid ? (
                   <div>
-                    <div className="documentation-preview" style={{ margin: "15px auto" }}>
-                      <h3>Mermaid Flowchart Syntax</h3>
-                      <p>
-                        This flowchart models the extracted internal import links between modules:
-                      </p>
-                    </div>
-                    <pre className="code-pre">{diagramMermaid}</pre>
+                    {overview && (
+                      <div className="overview-panel">
+                        <p className="overview-type">{overview.project_type}</p>
+                        <p className="insight-text">{overview.architecture.style}</p>
+                        {overview.architecture.startup_chains.map((chain) => (
+                          <p key={chain.join(">")} className="insight-text">
+                            <strong>Startup path:</strong> {chain.join(" → ")}
+                          </p>
+                        ))}
+                        {overview.architecture.flows.map((f) => (
+                          <p key={f} className="insight-text">{f}</p>
+                        ))}
+                      </div>
+                    )}
+                    {diagramData?.stats && (
+                      <div className="badge-row" style={{ marginTop: "14px" }}>
+                        <span className="badge badge-soft">{diagramData.stats.files} files</span>
+                        <span className="badge badge-soft">{diagramData.stats.edges} relationships</span>
+                        <span className="badge badge-soft">{diagramData.stats.endpoints} endpoints</span>
+                        <span className="badge badge-soft">{diagramData.stats.entry_points} entry points</span>
+                      </div>
+                    )}
+                    {diagramData?.tree && diagramData.tree.length > 0 && (
+                      <div className="documentation-preview" style={{ margin: "15px auto", textAlign: "left" }}>
+                        <h3>Structure from entry points</h3>
+                        <p>Each file is shown under the file that renders, mounts, loads, calls or imports it.</p>
+                        <ul className="tree-list tree-root">
+                          {diagramData.tree.map((node, idx) => (
+                            <TreeNode key={`${node.path}-${idx}`} node={node} />
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    <MermaidDiagram chart={diagramMermaid} />
+                    <details className="documentation-preview mermaid-source" style={{ margin: "15px auto" }}>
+                      <summary><strong>Mermaid Flowchart Syntax</strong></summary>
+                      <p>Raw Mermaid generated by CodeLens-AI.</p>
+                      <pre className="code-pre">{diagramMermaid}</pre>
+                    </details>
                   </div>
                 ) : (
                   <button className="browse-btn" onClick={() => handleGenerateDiagram()}>
@@ -875,7 +1319,7 @@ function App() {
           <div className="page-heading">
             <span className="section-label">SEMANTIC SEARCH & Q&A</span>
             <h1>Ask Your Codebase</h1>
-            <p>Ask natural language questions about your codebase with semantic chunk retrieval.</p>
+            <p>Ask about your codebase. Answers are built from the project's files, structure and relationships.</p>
           </div>
 
           {errorMessage && <div className="error-banner">{errorMessage}</div>}
@@ -896,16 +1340,41 @@ function App() {
                   </button>
                 </form>
 
+                <div className="sources-tags" style={{ marginTop: "10px" }}>
+                  {[
+                    "How does the application start?",
+                    "Which files are responsible for the main feature?",
+                    "What technologies does this project use?",
+                    "What API endpoints exist?",
+                  ].map((q) => (
+                    <button
+                      key={q}
+                      type="button"
+                      className="source-tag source-tag-btn"
+                      disabled={asking}
+                      onClick={() => {
+                        setQuestion(q);
+                        handleAsk(null, q);
+                      }}
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+
                 {asking && (
                   <div style={{ textAlign: "center", padding: "30px 0" }}>
                     <span className="spinner" style={{ borderColor: "#6b5cff", borderTopColor: "transparent" }} />
-                    <p style={{ marginTop: "12px", color: "#64748b" }}>Retrieving code chunks & synthesizing answer...</p>
+                    <p style={{ marginTop: "12px", color: "#64748b" }}>Searching files and relationships...</p>
                   </div>
                 )}
 
                 {qaAnswer && (
                   <div className="qa-answer-card">
-                    <h4>✦ AI Response:</h4>
+                    <h4>
+                      ✦ Answer
+                      {qaAnswer.intent && <span className="badge badge-soft" style={{ marginLeft: "8px" }}>{qaAnswer.intent}</span>}
+                    </h4>
                     <p>{qaAnswer.answer}</p>
                     {qaAnswer.sources && qaAnswer.sources.length > 0 && (
                       <div className="sources-tags">
@@ -913,8 +1382,9 @@ function App() {
                           Citations:
                         </span>
                         {qaAnswer.sources.map((src, idx) => (
-                          <span key={idx} className="source-tag">
+                          <span key={idx} className="source-tag" title={src.reason || ""}>
                             📄 {src.file_path} ({Math.round(src.score * 100)}%)
+                            {src.reason ? <em className="source-reason"> — {src.reason}</em> : null}
                           </span>
                         ))}
                       </div>
@@ -932,6 +1402,103 @@ function App() {
                 </button>
               </>
             )}
+          </div>
+        </section>
+      );
+    }
+
+    if (activePage === "Change Impact") {
+      return (
+        <section className="page-content">
+          <div className="page-heading">
+            <span className="section-label">ENGINEERING INTELLIGENCE</span>
+            <h1>Change Impact Analyzer</h1>
+            <p>See what could be affected before you change a file. CodeLens uses the verified project relationship graph first, then Gemini explains the impact.</p>
+          </div>
+          {errorMessage && <div className="error-banner">{errorMessage}</div>}
+          <div className="result-card">
+            {projectId ? (
+              <>
+                <div className="controls-row">
+                  <div style={{ flex: 1, minWidth: "260px" }}>
+                    <label className="control-label">File to change</label>
+                    <select className="file-select" value={selectedFilePath} onChange={(e) => { setSelectedFilePath(e.target.value); setImpactResult(null); }}>
+                      {(projectData?.files || []).map((f) => <option key={f.path} value={f.path}>{f.path}</option>)}
+                    </select>
+                  </div>
+                  <button className="browse-btn" onClick={() => handleImpact()} disabled={impactLoading || !selectedFilePath}>
+                    {impactLoading ? "Analyzing..." : "⚡ Analyze Impact"}
+                  </button>
+                </div>
+                {impactResult && (
+                  <>
+                    <div className="impact-summary-grid">
+                      <div className="impact-score-card"><span>Impact</span><strong>{impactResult.impact_level}</strong><small>{impactResult.impact_score}/100</small></div>
+                      <div className="impact-metric"><span>Direct dependents</span><strong>{impactResult.counts.direct_dependents}</strong></div>
+                      <div className="impact-metric"><span>Indirect dependents</span><strong>{impactResult.counts.indirect_dependents}</strong></div>
+                      <div className="impact-metric"><span>Total impacted</span><strong>{impactResult.counts.total_impacted}</strong></div>
+                      <div className="impact-metric"><span>Entry path</span><strong>{impactResult.entry_point_involvement ? "YES" : "NO"}</strong></div>
+                    </div>
+                    <div className="insight-grid">
+                      <div className="insight-card">
+                        <h4>Directly affected</h4>
+                        {impactResult.direct_dependents.length ? <ul className="relation-list">{impactResult.direct_dependents.map((x) => <li key={x.path}><span className="tree-path">{x.path}</span><span className="tree-via">{x.relation}</span></li>)}</ul> : <p className="insight-note">No direct dependents detected.</p>}
+                      </div>
+                      <div className="insight-card">
+                        <h4>Dependency context</h4>
+                        {impactResult.dependencies.length ? <ul className="relation-list">{impactResult.dependencies.map((x) => <li key={x.path}><span className="tree-path">{x.path}</span><span className="tree-via">{x.relation}</span></li>)}</ul> : <p className="insight-note">No outgoing dependencies detected.</p>}
+                      </div>
+                    </div>
+                    {impactResult.ai_explanation ? <div className="ai-insight-box"><strong>✦ Gemini impact explanation</strong><p>{impactResult.ai_explanation}</p></div> : impactResult.ai_pending ? <div className="ai-insight-box"><strong>✦ Gemini enhancement</strong><p>Static impact analysis is ready. Gemini is generating the explanation in the background.</p></div> : null}
+                    <div className="insight-card" style={{ marginTop: "14px" }}>
+                      <h4>Blast radius</h4>
+                      <div className="sources-tags">{impactResult.impacted_files.map((x) => <button key={x.path} className="source-tag source-tag-btn" onClick={() => { setSelectedFilePath(x.path); handleImpact(x.path); }}>{x.path} · {x.distance} hop</button>)}</div>
+                    </div>
+                  </>
+                )}
+              </>
+            ) : <><div className="empty-icon">⚡</div><h2>No project loaded</h2><p>Upload a project before analyzing change impact.</p><button className="browse-btn" onClick={scrollToUpload}>Upload Code</button></>}
+          </div>
+        </section>
+      );
+    }
+
+    if (activePage === "Safe Refactor") {
+      return (
+        <section className="page-content">
+          <div className="page-heading">
+            <span className="section-label">ENGINEERING SAFETY</span>
+            <h1>Safe Refactor Planner</h1>
+            <p>Describe a proposed change. CodeLens builds an evidence-backed refactor checklist from the project's dependency graph.</p>
+          </div>
+          {errorMessage && <div className="error-banner">{errorMessage}</div>}
+          <div className="result-card">
+            {projectId ? (
+              <>
+                <div className="controls-row">
+                  <div style={{ flex: 1, minWidth: "260px" }}>
+                    <label className="control-label">File to refactor</label>
+                    <select className="file-select" value={selectedFilePath} onChange={(e) => { setSelectedFilePath(e.target.value); setRefactorResult(null); }}>
+                      {(projectData?.files || []).map((f) => <option key={f.path} value={f.path}>{f.path}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <textarea className="refactor-input" rows="4" value={refactorDescription} onChange={(e) => setRefactorDescription(e.target.value)} placeholder="Example: Rename this component and split its API calls into a separate service." />
+                <button className="browse-btn" onClick={handleSafeRefactor} disabled={refactorLoading || !refactorDescription.trim()}>
+                  {refactorLoading ? "Building plan..." : "🛡 Generate Safe Refactor Plan"}
+                </button>
+                {refactorResult && (
+                  <div style={{ marginTop: "18px" }}>
+                    <div className="ai-insight-box"><strong>✦ Refactor plan</strong><p>{refactorResult.ai_plan || refactorResult.plan.join("\n")}</p>{refactorResult.ai_pending && <small>Gemini enhancement is running in the background.</small>}</div>
+                    <div className="insight-card" style={{ marginTop: "14px", textAlign: "left" }}>
+                      <h4>Verified checklist</h4>
+                      <ol className="refactor-checklist">{refactorResult.plan.map((step, i) => <li key={i}>{step}</li>)}</ol>
+                    </div>
+                    <div className="badge-row"><span className="badge badge-soft">Impact: {refactorResult.impact.impact_level}</span><span className="badge badge-soft">{refactorResult.impact.counts.total_impacted} impacted files</span><span className="badge badge-soft">Source: {refactorResult.source}</span></div>
+                  </div>
+                )}
+              </>
+            ) : <><div className="empty-icon">🛡</div><h2>No project loaded</h2><p>Upload a project before creating a refactor plan.</p><button className="browse-btn" onClick={scrollToUpload}>Upload Code</button></>}
           </div>
         </section>
       );

@@ -1,0 +1,28 @@
+warning: in the working copy of 'AGENTS.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/README.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/main.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/requirements.txt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/services/ai_client.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/IBM_BOB_PLAN.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/package.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/src/App.css', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/src/App.jsx', LF will be replaced by CRLF the next time Git touches it
+ AGENTS.md                     |  52 [32m++[m[31m--[m
+ backend/README.md             |  29 [32m++[m
+ backend/db/database.py        |   4 [32m+[m[31m-[m
+ backend/main.py               |   2 [32m+[m
+ backend/models/db_models.py   |  55 [32m++++[m
+ backend/requirements.txt      |   6 [32m+[m
+ backend/routers/ask.py        |  48 [32m+++[m[31m-[m
+ backend/routers/diagram.py    |  74 [32m++[m[31m---[m
+ backend/routers/docs.py       |  72 [32m++[m[31m---[m
+ backend/routers/explain.py    | 455 [32m+++++++++++++++[m[31m---------------[m
+ backend/routers/structure.py  |  72 [32m++++[m[31m-[m
+ backend/routers/upload.py     |  34 [32m++[m[31m-[m
+ backend/services/ai_client.py | 157 [32m+++++++++[m[31m--[m
+ backend/services/parser.py    | 178 [32m+++++++++[m[31m---[m
+ docs/IBM_BOB_PLAN.md          |   8 [32m+[m
+ frontend/package.json         |   3 [32m+[m[31m-[m
+ frontend/src/App.css          | 127 [32m++++++++[m[31m-[m
+ frontend/src/App.jsx          | 635 [32m+++++++++++++++++++++++++++++++++++++++[m[31m---[m
+ 18 files changed, 1586 insertions(+), 425 deletions(-)

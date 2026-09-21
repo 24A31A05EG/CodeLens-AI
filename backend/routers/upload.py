@@ -24,7 +24,9 @@ from models.db_models import Chunk, Project, ProjectFile, User
 from services.access import get_current_user, get_owned_project
 from services.ai_client import embed_text
 from services.audit import log_action
-from services.parser import EXT_TO_LANG, chunk_file, parse_project
+from services.analysis.pipeline import analyze_files, legacy_columns
+from services.analysis.store import save_analysis
+from services.parser import chunk_file, is_supported_file, parse_project, supported_description
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +178,23 @@ def _run_parse_job(project_id: str, repo_path: str) -> None:
                 )
                 return
 
+            # Deep static analysis (facts -> graph -> project context).
+            # A failure here must not fail the upload: legacy behaviour remains.
+            analysis = None
+            try:
+                analysis = analyze_files(parsed_files, project.name)
+            except Exception:
+                logger.exception("Static analysis failed for project %s.", project_id)
+            chunk_lines = {}
+            if analysis:
+                for parsed_file in parsed_files:
+                    facts = analysis["files"].get(parsed_file["path"])
+                    if facts:
+                        symbols, import_lines, lines = legacy_columns(facts)
+                        parsed_file["symbols"] = symbols
+                        parsed_file["imports"] = import_lines
+                        chunk_lines[parsed_file["path"]] = lines
+
             for parsed_file in parsed_files:
                 db.add(
                     ProjectFile(
@@ -191,6 +210,7 @@ def _run_parse_job(project_id: str, repo_path: str) -> None:
                 chunks = chunk_file(
                     parsed_file["full_path"],
                     parsed_file["symbols"],
+                    symbol_lines=chunk_lines.get(parsed_file["path"]),
                 )
 
                 for chunk_text in chunks:
@@ -214,6 +234,14 @@ def _run_parse_job(project_id: str, repo_path: str) -> None:
                             embedding=embedding,
                         )
                     )
+
+            if analysis:
+                try:
+                    db.flush()
+                    save_analysis(db, project_id, analysis)
+                except Exception:
+                    db.rollback()
+                    raise
 
             project.status = "ready"
             db.commit()
@@ -294,8 +322,8 @@ async def upload_project(
         if not is_zip:
             extension = os.path.splitext(filename)[1].lower()
 
-            if extension not in EXT_TO_LANG:
-                supported = ", ".join(sorted(EXT_TO_LANG))
+            if not is_supported_file(filename):
+                supported = supported_description()
 
                 raise HTTPException(
                     400,

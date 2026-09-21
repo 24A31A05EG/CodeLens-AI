@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,7 +11,9 @@ from db.database import get_db
 from models.db_models import Explanation, Project, ProjectFile, User
 from routers.upload import STORAGE_ROOT
 from services.access import get_current_user, get_owned_project
-from services.ai_client import explain_code
+from services.ai_client import explain_code, explain_file
+from services.analysis.redact import redact_secrets
+from services.analysis.store import ensure_analysis, is_stale
 from services.audit import log_action
 
 
@@ -68,15 +71,29 @@ def _resolve_project_file(project_id: str, file_path: str) -> str:
 
 
 def _explain_one(
-    project_id: str,
+    project: Project,
     file_path: str,
     level: str,
     db: Session,
+    analysis: Optional[dict] = None,
 ) -> dict:
+    project_id = project.id
+    normalized_path = file_path.replace("\\", "/").strip("/")
 
-    normalized_path = (
-        file_path.replace("\\", "/").strip("/")
+    # Path safety first (400 traversal / 404 missing), before any cache lookup.
+    full_path = _resolve_project_file(project_id, normalized_path)
+
+    # Only files that were ingested for THIS project may be explained. This keeps
+    # files that are deliberately skipped (.env, keys, lockfiles ...) unreadable
+    # through this endpoint even though they exist on disk.
+    known = (
+        db.query(ProjectFile)
+        .filter(ProjectFile.project_id == project_id, ProjectFile.path == normalized_path)
+        .first()
+        is not None
     )
+    if not known:
+        raise HTTPException(404, "File not found in project.")
 
     cached = (
         db.query(Explanation)
@@ -87,72 +104,58 @@ def _explain_one(
         )
         .first()
     )
+    fresh_cache = cached is not None and not is_stale(cached.created_at, analysis)
 
-    if cached:
-        log_action(
-            db=db,
-            action="EXPLAIN_CODE",
-            project_id=project_id,
-            details={
-                "file_path": cached.file_path,
-                "level": cached.level,
-                "cached": True,
-            },
-        )
+    result = None
+    if analysis and normalized_path in analysis["files"]:
+        result = explain_file(analysis, normalized_path, level)
 
-        return {
-            "file_path": cached.file_path,
-            "level": cached.level,
-            "explanation": cached.content,
-            "cached": True,
-        }
-
-    full_path = _resolve_project_file(
-        project_id,
-        normalized_path,
-    )
-
-    with open(
-        full_path,
-        "r",
-        encoding="utf-8",
-        errors="ignore",
-    ) as source_file:
-        code = source_file.read()
-
-    explanation_text = explain_code(
-        code,
-        level,
-        file_path=normalized_path,
-    )
-
-    db.add(
-        Explanation(
-            project_id=project_id,
-            file_path=normalized_path,
-            level=level,
-            content=explanation_text,
-        )
-    )
-
-    db.commit()
+    if fresh_cache:
+        explanation_text = cached.content
+        cache_hit = True
+    else:
+        if result is not None:
+            explanation_text = result["text"]
+        else:  # no analysis available: legacy single-file template
+            with open(full_path, "r", encoding="utf-8", errors="ignore") as source_file:
+                code = redact_secrets(source_file.read())
+            explanation_text = explain_code(code, level, file_path=normalized_path)
+        if cached is not None:  # stale: refresh in place
+            cached.content = explanation_text
+            cached.created_at = datetime.utcnow()
+        else:
+            db.add(
+                Explanation(
+                    project_id=project_id,
+                    file_path=normalized_path,
+                    level=level,
+                    content=explanation_text,
+                )
+            )
+        db.commit()
+        cache_hit = False
 
     log_action(
         db=db,
         action="EXPLAIN_CODE",
         project_id=project_id,
-        details={
-            "file_path": normalized_path,
-            "level": level,
-        },
+        details={"file_path": normalized_path, "level": level, "cached": cache_hit},
     )
 
-    return {
+    payload = {
         "file_path": normalized_path,
         "level": level,
         "explanation": explanation_text,
-        "cached": False,
+        "cached": cache_hit,
+        "source": result["source"] if result else "legacy-template",
     }
+    if result is not None:
+        payload["analysis"] = result["relations"]
+    return payload
+
+
+def _repo_path(project_id: str) -> str:
+    return os.path.join(STORAGE_ROOT, project_id)
 
 
 @router.post("")
@@ -176,11 +179,13 @@ def explain(
                 "file_path must not be empty when provided.",
             )
 
+        analysis = ensure_analysis(db, project, _repo_path(project.id))
         result = _explain_one(
-            req.project_id,
+            project,
             req.file_path,
             req.level,
             db,
+            analysis,
         )
 
         return {
@@ -203,12 +208,14 @@ def explain(
             "No parsed files found for this project.",
         )
 
+    analysis = ensure_analysis(db, project, _repo_path(project.id))
     explanations = [
         _explain_one(
-            req.project_id,
+            project,
             project_file.path,
             req.level,
             db,
+            analysis,
         )
         for project_file in project_files
     ]
@@ -221,4 +228,4 @@ def explain(
             for item in explanations
         ),
         "explanations": explanations,
-    }
+    }
